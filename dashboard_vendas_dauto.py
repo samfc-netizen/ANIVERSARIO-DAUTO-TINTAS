@@ -587,31 +587,37 @@ with col_graf:
     )
     st.plotly_chart(fig_aniv, use_container_width=True)
 
-st.subheader("Ranking de distância para a meta")
+st.subheader("Ranking das lojas na Semana do Aniversário")
+st.caption(
+    "Critério: maior diferença entre realizado e meta. "
+    "Os maiores valores positivos ficam na frente; entre valores negativos, "
+    "fica na frente quem estiver mais próximo de zero."
+)
 
-# A diferença exibida é Realizado - Meta.
-# A ordenação usa o valor absoluto da diferença, para que a loja mais distante
-# da meta apareça primeiro, esteja ela acima ou abaixo do objetivo.
+# Diferença = Realizado - Meta.
+# O ranking é ordenado diretamente pela diferença, do maior valor para o menor.
+# Exemplos: +3 fica à frente de +1; -12 fica à frente de -39.
 ranking = aniv.copy()
 ranking["DIFERENCA"] = ranking["REALIZADO"] - ranking["META"]
-ranking["DISTANCIA_ABS"] = ranking["DIFERENCA"].abs()
 ranking = ranking.sort_values(
-    ["DISTANCIA_ABS", "REALIZADO"],
+    ["DIFERENCA", "REALIZADO"],
     ascending=[False, False]
 ).reset_index(drop=True)
-ranking["POSIÇÃO"] = range(1, len(ranking) + 1)
+
+medalhas = {1: "🥇 1º", 2: "🥈 2º", 3: "🥉 3º"}
+ranking["POSIÇÃO_NUM"] = range(1, len(ranking) + 1)
+ranking["POSIÇÃO"] = ranking["POSIÇÃO_NUM"].map(
+    lambda pos: medalhas.get(pos, f"{pos}º")
+)
 ranking["PERCENTUAL_META"] = np.where(
     ranking["META"] != 0,
     ranking["REALIZADO"] / ranking["META"] * 100,
     np.nan,
 )
-ranking["SITUAÇÃO"] = np.where(
-    ranking["DIFERENCA"] >= 0,
-    "Acima da meta",
-    "Abaixo da meta"
-)
-ranking["TEXTO_DIFERENCA"] = ranking["DIFERENCA"].map(
-    lambda x: f"+{brl(x)}" if x >= 0 else f"-{brl(abs(x))}"
+ranking["SITUAÇÃO"] = np.select(
+    [ranking["DIFERENCA"] > 0, ranking["DIFERENCA"] == 0],
+    ["Acima da meta", "Meta atingida"],
+    default="Abaixo da meta"
 )
 
 ranking_exib = ranking.rename(columns={
@@ -625,51 +631,54 @@ ranking_exib = ranking.rename(columns={
 })
 
 def formatar_diferenca(valor):
-    return f"+{brl(valor)}" if valor >= 0 else f"-{brl(abs(valor))}"
+    if valor > 0:
+        return f"+{brl(valor)}"
+    if valor < 0:
+        return f"-{brl(abs(valor))}"
+    return brl(0)
+
+ranking_tabela = ranking_exib[[
+    "Posição", "Loja", "Meta", "Realizado",
+    "% da Meta", "Diferença", "Situação"
+]].copy()
+
+styler_ranking = ranking_tabela.style.format({
+    "Meta": brl,
+    "Realizado": brl,
+    "% da Meta": lambda x: pct(x),
+    "Diferença": formatar_diferenca,
+})
+
+def destacar_diferenca(valor):
+    if valor > 0:
+        return "color: #1565c0; font-weight: 800;"
+    if valor < 0:
+        return "color: #c62828; font-weight: 800;"
+    return "color: #475467; font-weight: 800;"
+
+styler_ranking = styler_ranking.map(
+    destacar_diferenca,
+    subset=["Diferença"]
+)
+
+def destacar_podio(linha):
+    posicao = str(linha["Posição"])
+    if posicao.startswith("🥇"):
+        return ["background-color: #fff4bf; font-weight: 800;"] * len(linha)
+    if posicao.startswith("🥈"):
+        return ["background-color: #f1f3f5; font-weight: 700;"] * len(linha)
+    if posicao.startswith("🥉"):
+        return ["background-color: #f7dfcf; font-weight: 700;"] * len(linha)
+    return [""] * len(linha)
+
+styler_ranking = styler_ranking.apply(destacar_podio, axis=1)
 
 st.dataframe(
-    tabela_estilizada(
-        ranking_exib[[
-            "Posição", "Loja", "Meta", "Realizado",
-            "% da Meta", "Diferença", "Situação"
-        ]],
-        formatos={
-            "Meta": brl,
-            "Realizado": brl,
-            "% da Meta": lambda x: pct(x),
-            "Diferença": formatar_diferenca,
-        },
-        positivos=["Diferença"],
-    ),
+    styler_ranking,
     use_container_width=True,
     hide_index=True,
+    height=min(470, 44 + 36 * len(ranking_tabela)),
 )
-
-fig_rank = px.bar(
-    ranking,
-    x="DISTANCIA_ABS",
-    y="LOJA",
-    orientation="h",
-    text="TEXTO_DIFERENCA",
-    color="SITUAÇÃO",
-    title="Ranking pela maior distância absoluta entre realizado e meta",
-    labels={
-        "DISTANCIA_ABS": "Distância absoluta da meta",
-        "LOJA": "Loja",
-        "SITUAÇÃO": "Situação",
-    },
-    color_discrete_map={
-        "Acima da meta": "#1565c0",
-        "Abaixo da meta": "#c62828",
-    },
-)
-fig_rank.update_layout(
-    height=max(350, 44 * len(ranking)),
-    yaxis={"categoryorder": "array", "categoryarray": ranking["LOJA"].tolist()[::-1]},
-    xaxis_tickprefix="R$ ",
-    legend_title_text="",
-)
-st.plotly_chart(fig_rank, use_container_width=True)
 
 st.subheader("Meta diária — comparação de 27 a 31 de julho")
 dias_aniversario = pd.date_range("2026-07-27", "2026-07-31", freq="D")
@@ -1146,6 +1155,6 @@ if empresas_nao_mapeadas:
     )
 
 st.caption(
-    "Critério do ranking da Semana do Aniversário: maior valor ainda necessário para atingir a meta. "
+    "Critério do ranking da Semana do Aniversário: diferença entre realizado e meta, ordenada do maior valor para o menor. "
     "Valores negativos são preservados como devoluções quando a opção correspondente está marcada."
 )
