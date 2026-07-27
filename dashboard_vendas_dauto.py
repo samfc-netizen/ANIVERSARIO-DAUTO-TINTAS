@@ -767,6 +767,46 @@ st.dataframe(
     height=min(470, 44 + 36 * len(ranking_tabela)),
 )
 
+# Texto pronto para compartilhamento no WhatsApp
+linhas_whatsapp_aniv = [
+    "*PARCIAL — SEMANA DE ANIVERSÁRIO DAUTO TINTAS*",
+    "Período: 27 a 31 de julho",
+    "",
+    f"*Realizado geral:* {brl(total_real_aniv)}",
+    f"*Meta geral:* {brl(total_meta_aniv)}",
+    f"*Atingimento geral:* {pct(total_pct_aniv)}",
+]
+if total_falta_aniv > 0:
+    linhas_whatsapp_aniv.append(f"*Falta para a meta geral:* {brl(total_falta_aniv)}")
+else:
+    linhas_whatsapp_aniv.append(f"*Meta geral superada em:* {brl(abs(total_falta_aniv))}")
+
+linhas_whatsapp_aniv.extend(["", "*RANKING PARCIAL POR LOJA*"])
+for _, row in ranking.iterrows():
+    posicao = row["POSIÇÃO"]
+    loja = row["LOJA"]
+    realizado = row["REALIZADO"]
+    meta = row["META"]
+    diferenca = row["DIFERENCA"]
+    linhas_whatsapp_aniv.append(f"{posicao} *{loja}*")
+    linhas_whatsapp_aniv.append(f"Realizado: {brl(realizado)}")
+    linhas_whatsapp_aniv.append(f"Meta: {brl(meta)}")
+    if diferenca >= 0:
+        linhas_whatsapp_aniv.append(f"Meta superada em: {brl(diferenca)}")
+    else:
+        linhas_whatsapp_aniv.append(f"Falta para a meta: {brl(abs(diferenca))}")
+    linhas_whatsapp_aniv.append("")
+
+texto_whatsapp_aniv = "\n".join(linhas_whatsapp_aniv).strip()
+
+st.subheader("Texto para WhatsApp — Semana do Aniversário")
+st.text_area(
+    "Copie e envie o texto abaixo",
+    value=texto_whatsapp_aniv,
+    height=430,
+    key="texto_whatsapp_aniversario",
+)
+
 st.subheader("Meta diária — comparação de 27 a 31 de julho")
 dias_aniversario = pd.date_range("2026-07-27", "2026-07-31", freq="D")
 loja_diaria = st.selectbox(
@@ -864,6 +904,20 @@ geral["CRESCIMENTO_PCT"] = np.where(
     np.nan,
 )
 
+# Linha consolidada GERAL para análise do conjunto selecionado
+total_real_ano1 = geral["REALIZADO"].sum()
+total_ano1 = geral["ANO_ANTERIOR"].sum()
+total_variacao_ano1 = total_real_ano1 - total_ano1
+total_crescimento_ano1 = (total_variacao_ano1 / total_ano1 * 100) if total_ano1 else np.nan
+linha_geral_ano1 = pd.DataFrame([{
+    "LOJA": "GERAL",
+    "REALIZADO": total_real_ano1,
+    "ANO_ANTERIOR": total_ano1,
+    "VARIACAO_VALOR": total_variacao_ano1,
+    "CRESCIMENTO_PCT": total_crescimento_ano1,
+}])
+geral_com_total = pd.concat([geral, linha_geral_ano1], ignore_index=True)
+
 vg1, vg2, vg3 = st.columns(3)
 vg1.metric("Faturamento selecionado", brl(geral["REALIZADO"].sum()))
 vg2.metric("Base Ano-1", brl(geral["ANO_ANTERIOR"].sum()))
@@ -876,7 +930,7 @@ vg3.metric("Crescimento consolidado", pct(cres_total), delta=pct(cres_total))
 
 g1, g2 = st.columns([1.15, 1])
 with g1:
-    geral_exib = geral.rename(columns={
+    geral_exib = geral_com_total.rename(columns={
         "REALIZADO": "Realizado",
         "ANO_ANTERIOR": "Ano-1",
         "VARIACAO_VALOR": "Variação",
@@ -900,7 +954,7 @@ with g1:
 
 with g2:
     fig_geral = px.bar(
-        geral,
+        geral_com_total,
         x="LOJA",
         y=["REALIZADO", "ANO_ANTERIOR"],
         barmode="group",
@@ -932,15 +986,29 @@ metas = base_lojas(real_geral, METAS_MES)
 if lojas_selecionadas:
     metas = metas[metas["LOJA"].isin(lojas_selecionadas)].copy()
 
+# Linha consolidada GERAL para metas
+total_real_meta = metas["REALIZADO"].sum()
+total_meta_geral = metas["META"].sum()
+total_falta_meta = total_meta_geral - total_real_meta
+total_pct_meta = (total_real_meta / total_meta_geral * 100) if total_meta_geral else np.nan
+linha_geral_meta = pd.DataFrame([{
+    "LOJA": "GERAL",
+    "REALIZADO": total_real_meta,
+    "META": total_meta_geral,
+    "FALTA": total_falta_meta,
+    "ATINGIMENTO_PCT": total_pct_meta,
+}])
+metas_com_total = pd.concat([metas, linha_geral_meta], ignore_index=True)
+
 loja_gauge = st.selectbox(
     "Loja do velocímetro",
-    options=metas["LOJA"].tolist(),
+    options=metas_com_total["LOJA"].tolist(),
     key="loja_gauge"
 ) if not metas.empty else None
 
 mg1, mg2 = st.columns([1, 1.45])
 if loja_gauge:
-    linha_gauge = metas[metas["LOJA"] == loja_gauge].iloc[0]
+    linha_gauge = metas_com_total[metas_com_total["LOJA"] == loja_gauge].iloc[0]
     with mg1:
         st.plotly_chart(
             grafico_gauge(linha_gauge["ATINGIMENTO_PCT"], f"Meta mensal — {loja_gauge}"),
@@ -952,11 +1020,11 @@ if loja_gauge:
 
 with mg2:
     fig_metas = px.bar(
-        metas.sort_values("ATINGIMENTO_PCT"),
+        metas_com_total.sort_values("ATINGIMENTO_PCT"),
         x="ATINGIMENTO_PCT",
         y="LOJA",
         orientation="h",
-        text=metas.sort_values("ATINGIMENTO_PCT")["ATINGIMENTO_PCT"].map(lambda x: pct(x)),
+        text=metas_com_total.sort_values("ATINGIMENTO_PCT")["ATINGIMENTO_PCT"].map(lambda x: pct(x)),
         title="% da meta mensal por loja",
         labels={"ATINGIMENTO_PCT": "% da meta", "LOJA": "Loja"},
     )
@@ -964,7 +1032,7 @@ with mg2:
     fig_metas.update_layout(height=380, xaxis_ticksuffix="%")
     st.plotly_chart(fig_metas, use_container_width=True)
 
-metas_exib = metas.rename(columns={
+metas_exib = metas_com_total.rename(columns={
     "REALIZADO": "Realizado",
     "META": "Meta mensal",
     "FALTA": "Falta / Excedente",
@@ -983,6 +1051,42 @@ st.dataframe(
     ),
     use_container_width=True,
     hide_index=True,
+)
+
+# Texto consolidado de Ano-1 e Meta Geral para WhatsApp
+linhas_whatsapp_geral = [
+    "*CENÁRIO GERAL DE VENDAS — DAUTO TINTAS*",
+    f"Período analisado: {data_min.strftime('%d/%m/%Y')} a {data_max.strftime('%d/%m/%Y')}",
+    "",
+    "*COMPARATIVO ANO-1*",
+    f"Faturamento atual: {brl(total_real_ano1)}",
+    f"Faturamento Ano-1: {brl(total_ano1)}",
+]
+if total_variacao_ano1 >= 0:
+    linhas_whatsapp_geral.append(f"Crescimento em valor: {brl(total_variacao_ano1)}")
+else:
+    linhas_whatsapp_geral.append(f"Queda em valor: {brl(abs(total_variacao_ano1))}")
+linhas_whatsapp_geral.append(f"Variação percentual: {pct(total_crescimento_ano1)}")
+linhas_whatsapp_geral.extend([
+    "",
+    "*CENÁRIO DA META GERAL*",
+    f"Realizado: {brl(total_real_meta)}",
+    f"Meta geral: {brl(total_meta_geral)}",
+    f"Atingimento: {pct(total_pct_meta)}",
+])
+if total_falta_meta > 0:
+    linhas_whatsapp_geral.append(f"Falta para atingir a meta: {brl(total_falta_meta)}")
+else:
+    linhas_whatsapp_geral.append(f"Meta superada em: {brl(abs(total_falta_meta))}")
+
+texto_whatsapp_geral = "\n".join(linhas_whatsapp_geral)
+
+st.subheader("Texto para WhatsApp — Ano-1 e Meta Geral")
+st.text_area(
+    "Copie e envie o cenário consolidado",
+    value=texto_whatsapp_geral,
+    height=310,
+    key="texto_whatsapp_cenario_geral",
 )
 
 st.divider()
