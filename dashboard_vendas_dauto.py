@@ -1421,9 +1421,11 @@ for aba, base_abc, dimensoes, tipo_metrica in config_abc:
             )
 
         abc_exib = base_abc.copy()
+        # VALOR_ABC é usado apenas no cálculo e não deve ser renomeado para
+        # Faturamento/Quantidade, pois essas colunas já existem na base.
+        # Renomeá-lo criava nomes duplicados e quebrava o Pandas Styler.
         renomear = {
             "POSICAO": "Posição",
-            "VALOR_ABC": tipo_metrica,
             "FATURAMENTO": "Faturamento",
             "QUANTIDADE": "Quantidade",
             "PARTICIPACAO_PCT": "% Participação",
@@ -1435,22 +1437,28 @@ for aba, base_abc, dimensoes, tipo_metrica in config_abc:
         }
         abc_exib = abc_exib.rename(columns=renomear)
 
+        metrica_principal = "Faturamento" if tipo_metrica == "Faturamento" else "Quantidade"
         metrica_complementar = "Quantidade" if tipo_metrica == "Faturamento" else "Faturamento"
         colunas = ["Posição"] + [renomear.get(c, c) for c in dimensoes] + [
-            tipo_metrica,
+            metrica_principal,
             metrica_complementar,
             "% Participação",
             "% Acumulado",
             "Curva ABC",
         ]
 
+        tabela_abc = abc_exib.loc[:, colunas].copy()
         formato_quantidade = lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        styler_abc = estilo_curva_abc(abc_exib[colunas]).format({
-            "Faturamento": brl,
-            "Quantidade": formato_quantidade,
+        formatos_abc = {
             "% Participação": lambda x: pct(x, 2),
             "% Acumulado": lambda x: pct(x, 2),
-        })
+        }
+        if "Faturamento" in tabela_abc.columns:
+            formatos_abc["Faturamento"] = brl
+        if "Quantidade" in tabela_abc.columns:
+            formatos_abc["Quantidade"] = formato_quantidade
+
+        styler_abc = estilo_curva_abc(tabela_abc).format(formatos_abc)
         st.dataframe(
             styler_abc,
             use_container_width=True,
