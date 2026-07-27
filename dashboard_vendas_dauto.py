@@ -588,29 +588,74 @@ with col_graf:
     st.plotly_chart(fig_aniv, use_container_width=True)
 
 st.subheader("Ranking de distância para a meta")
-ranking = aniv.sort_values("FALTA", ascending=False).copy()
+
+# A diferença exibida é Realizado - Meta.
+# A ordenação usa o valor absoluto da diferença, para que a loja mais distante
+# da meta apareça primeiro, esteja ela acima ou abaixo do objetivo.
+ranking = aniv.copy()
+ranking["DIFERENCA"] = ranking["REALIZADO"] - ranking["META"]
+ranking["DISTANCIA_ABS"] = ranking["DIFERENCA"].abs()
+ranking = ranking.sort_values(
+    ["DISTANCIA_ABS", "REALIZADO"],
+    ascending=[False, False]
+).reset_index(drop=True)
 ranking["POSIÇÃO"] = range(1, len(ranking) + 1)
-ranking["CRITÉRIO"] = np.where(
-    ranking["FALTA"] > 0,
-    ranking["FALTA"].map(lambda x: f"Faltam {brl(x)}"),
-    (-ranking["FALTA"]).map(lambda x: f"Superou em {brl(x)}")
+ranking["SITUAÇÃO"] = np.where(
+    ranking["DIFERENCA"] >= 0,
+    "Acima da meta",
+    "Abaixo da meta"
+)
+ranking["TEXTO_DIFERENCA"] = ranking["DIFERENCA"].map(
+    lambda x: f"+{brl(x)}" if x >= 0 else f"-{brl(abs(x))}"
+)
+
+ranking_exib = ranking.rename(columns={
+    "POSIÇÃO": "Posição",
+    "LOJA": "Loja",
+    "META": "Meta",
+    "REALIZADO": "Realizado",
+    "DIFERENCA": "Diferença",
+    "SITUAÇÃO": "Situação",
+})
+
+st.dataframe(
+    tabela_estilizada(
+        ranking_exib[["Posição", "Loja", "Meta", "Realizado", "Diferença", "Situação"]],
+        formatos={
+            "Meta": brl,
+            "Realizado": brl,
+            "Diferença": brl,
+        },
+        positivos=["Diferença"],
+    ),
+    use_container_width=True,
+    hide_index=True,
 )
 
 fig_rank = px.bar(
     ranking,
-    x="FALTA",
+    x="DISTANCIA_ABS",
     y="LOJA",
     orientation="h",
-    text="CRITÉRIO",
-    title="Lojas mais distantes da meta em valor",
-    labels={"FALTA": "Distância para a meta", "LOJA": "Loja"},
+    text="TEXTO_DIFERENCA",
+    color="SITUAÇÃO",
+    title="Ranking pela maior distância absoluta entre realizado e meta",
+    labels={
+        "DISTANCIA_ABS": "Distância absoluta da meta",
+        "LOJA": "Loja",
+        "SITUAÇÃO": "Situação",
+    },
+    color_discrete_map={
+        "Acima da meta": "#1565c0",
+        "Abaixo da meta": "#c62828",
+    },
 )
 fig_rank.update_layout(
     height=max(350, 44 * len(ranking)),
     yaxis={"categoryorder": "array", "categoryarray": ranking["LOJA"].tolist()[::-1]},
     xaxis_tickprefix="R$ ",
+    legend_title_text="",
 )
-fig_rank.add_vline(x=0, line_width=1, line_dash="dash")
 st.plotly_chart(fig_rank, use_container_width=True)
 
 st.subheader("Meta diária — comparação de 27 a 31 de julho")
