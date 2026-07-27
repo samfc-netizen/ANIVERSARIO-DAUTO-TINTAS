@@ -412,12 +412,18 @@ def tabela_estilizada(df, formatos=None, positivos=None, negativos=None):
 
 
 def criar_curva_abc(df, dimensoes, metrica, nome_metrica):
-    """Cria Curva ABC pelo valor acumulado da métrica informada."""
+    """Cria Curva ABC e mantém faturamento e quantidade para análise cruzada."""
     base = (
         df.groupby(dimensoes, dropna=False)
-        .agg(VALOR_ABC=(metrica, "sum"))
+        .agg(
+            FATURAMENTO=("VR_TOTAL", "sum"),
+            QUANTIDADE=("QTD", "sum"),
+        )
         .reset_index()
-        .sort_values("VALOR_ABC", ascending=False)
+    )
+    base["VALOR_ABC"] = base["FATURAMENTO"] if metrica == "VR_TOTAL" else base["QUANTIDADE"]
+    base = (
+        base.sort_values("VALOR_ABC", ascending=False)
         .reset_index(drop=True)
     )
 
@@ -1418,6 +1424,8 @@ for aba, base_abc, dimensoes, tipo_metrica in config_abc:
         renomear = {
             "POSICAO": "Posição",
             "VALOR_ABC": tipo_metrica,
+            "FATURAMENTO": "Faturamento",
+            "QUANTIDADE": "Quantidade",
             "PARTICIPACAO_PCT": "% Participação",
             "ACUMULADO_PCT": "% Acumulado",
             "CURVA_ABC": "Curva ABC",
@@ -1426,14 +1434,20 @@ for aba, base_abc, dimensoes, tipo_metrica in config_abc:
             "LINHA": "Linha/Grupo",
         }
         abc_exib = abc_exib.rename(columns=renomear)
+
+        metrica_complementar = "Quantidade" if tipo_metrica == "Faturamento" else "Faturamento"
         colunas = ["Posição"] + [renomear.get(c, c) for c in dimensoes] + [
-            tipo_metrica, "% Participação", "% Acumulado", "Curva ABC"
+            tipo_metrica,
+            metrica_complementar,
+            "% Participação",
+            "% Acumulado",
+            "Curva ABC",
         ]
 
+        formato_quantidade = lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         styler_abc = estilo_curva_abc(abc_exib[colunas]).format({
-            tipo_metrica: brl if tipo_metrica == "Faturamento" else (
-                lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            ),
+            "Faturamento": brl,
+            "Quantidade": formato_quantidade,
             "% Participação": lambda x: pct(x, 2),
             "% Acumulado": lambda x: pct(x, 2),
         })
