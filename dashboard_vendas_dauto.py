@@ -836,11 +836,21 @@ st.divider()
 # =========================================================
 st.markdown('<div class="section-title">Vendas gerais por loja</div>', unsafe_allow_html=True)
 st.markdown(
-    f'<div class="section-subtitle">Período selecionado: {inicio.strftime("%d/%m/%Y")} a {fim.strftime("%d/%m/%Y")}.</div>',
+    f'<div class="section-subtitle">Comparação de Ano-1 usando todo o período do relatório: '
+    f'{data_min.strftime("%d/%m/%Y")} a {data_max.strftime("%d/%m/%Y")}.</div>',
     unsafe_allow_html=True
 )
 
-real_geral = dados_periodo.groupby("LOJA")["VR_TOTAL"].sum().to_dict()
+# Para os comparativos de Ano-1 e Meta, o realizado considera todo o período
+# disponível no relatório carregado, independentemente do filtro geral de datas.
+# O filtro de lojas continua sendo respeitado.
+dados_comparativo = dados.copy()
+if lojas_selecionadas:
+    dados_comparativo = dados_comparativo[
+        dados_comparativo["LOJA"].isin(lojas_selecionadas)
+    ].copy()
+
+real_geral = dados_comparativo.groupby("LOJA")["VR_TOTAL"].sum().to_dict()
 geral = pd.DataFrame({"LOJA": ORDEM_LOJAS})
 if lojas_selecionadas:
     geral = geral[geral["LOJA"].isin(lojas_selecionadas)].copy()
@@ -913,7 +923,8 @@ st.divider()
 # =========================================================
 st.markdown('<div class="section-title">Acompanhamento das metas mensais</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-subtitle">Percentual da meta alcançado e distância em valor.</div>',
+    f'<div class="section-subtitle">Percentual da meta e distância em valor, considerando o faturamento completo '
+    f'do relatório ({data_min.strftime("%d/%m/%Y")} a {data_max.strftime("%d/%m/%Y")}).</div>',
     unsafe_allow_html=True
 )
 
