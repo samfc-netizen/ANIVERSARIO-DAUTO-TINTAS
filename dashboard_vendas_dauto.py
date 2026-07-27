@@ -172,89 +172,122 @@ def codigo_chave(serie):
     )
 
 
-def encontrar_linha_cabecalho(texto):
-    for i, linha in enumerate(texto.splitlines()):
-        linha_norm = normalizar_texto(linha)
-        if "CLIENTE" in linha_norm and "VR.TOTAL" in linha_norm and "EMP" in linha_norm:
+def detectar_codificacao(conteudo_bytes):
+    """Detecta a codificação usando apenas uma amostra do arquivo."""
+    amostra = conteudo_bytes[:262_144]
+    for encoding in ("utf-8-sig", "cp1252", "latin1"):
+        try:
+            amostra.decode(encoding)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+    return "latin1"
+
+
+def encontrar_linha_cabecalho_bytes(conteudo_bytes, encoding):
+    """Localiza o cabeçalho sem decodificar nem copiar o CSV inteiro."""
+    stream = io.TextIOWrapper(
+        io.BytesIO(conteudo_bytes),
+        encoding=encoding,
+        errors="replace",
+        newline="",
+    )
+    for i, linha in enumerate(stream):
+        linha_upper = linha.upper()
+        if "CLIENTE" in linha_upper and "VR.TOTAL" in linha_upper and "EMP" in linha_upper:
             return i
+        # O cabeçalho institucional fica no início; evita varrer arquivos anormais inteiros.
+        if i >= 500:
+            break
     return None
 
 
-@st.cache_data(show_spinner=False)
+def _ler_csv_fallback(conteudo_bytes, encoding, header_idx):
+    """Leitor tolerante para relatórios com aspas ou linhas irregulares."""
+    texto = conteudo_bytes.decode(encoding, errors="replace")
+    trecho = "\n".join(texto.splitlines()[header_idx:])
+    leitor = csv.reader(io.StringIO(trecho), delimiter=";", quotechar='"', strict=False)
+    next(leitor, None)
+
+    dados = []
+    for linha in leitor:
+        if len(linha) >= 19:
+            dados.append(linha[:19])
+
+    if not dados:
+        raise ValueError("Nenhuma linha válida foi encontrada.")
+    return pd.DataFrame.from_records(dados, columns=COLUNAS_VENDAS)
+
+
+@st.cache_data(show_spinner=False, max_entries=3)
 def ler_relatorio_vendas(conteudo_bytes, nome_arquivo):
     nome = nome_arquivo.lower()
 
     if nome.endswith((".xlsx", ".xls")):
-        bruto = pd.read_excel(io.BytesIO(conteudo_bytes), header=None)
+        # Leitura única da planilha: identifica o cabeçalho e reaproveita o DataFrame.
+        bruto = pd.read_excel(io.BytesIO(conteudo_bytes), header=None, dtype=str)
 
         header_idx = None
-        for idx, row in bruto.iterrows():
-            texto = " | ".join(row.astype(str).tolist())
-            texto_norm = normalizar_texto(texto)
-            if "CLIENTE" in texto_norm and "VR.TOTAL" in texto_norm and "EMP" in texto_norm:
+        for idx, row in bruto.head(500).iterrows():
+            valores = row.fillna("").astype(str).str.upper()
+            texto = " | ".join(valores.tolist())
+            if "CLIENTE" in texto and "VR.TOTAL" in texto and "EMP" in texto:
                 header_idx = idx
                 break
 
         if header_idx is None:
             raise ValueError("Não foi possível localizar o cabeçalho do relatório de vendas.")
 
-        df = pd.read_excel(io.BytesIO(conteudo_bytes), header=header_idx)
+        df = bruto.iloc[header_idx + 1:, :19].copy()
         if df.shape[1] < 19:
             raise ValueError("O relatório não possui as 19 colunas esperadas.")
-        df = df.iloc[:, :19].copy()
         df.columns = COLUNAS_VENDAS
 
     else:
-        texto = None
-        for encoding in ("cp1252", "latin1", "utf-8-sig", "utf-8"):
-            try:
-                texto = conteudo_bytes.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-
-        if texto is None:
-            raise ValueError("Não foi possível identificar a codificação do arquivo.")
-
-        header_idx = encontrar_linha_cabecalho(texto)
+        encoding = detectar_codificacao(conteudo_bytes)
+        header_idx = encontrar_linha_cabecalho_bytes(conteudo_bytes, encoding)
         if header_idx is None:
             raise ValueError("Não foi possível localizar o cabeçalho CLIENTE/EMP/VR.TOTAL.")
 
-        trecho = "\n".join(texto.splitlines()[header_idx:])
-        leitor = csv.reader(io.StringIO(trecho), delimiter=";", quotechar='"', strict=False)
-        linhas = list(leitor)
+        # Caminho rápido: parser C do pandas. Não cria uma lista com todas as linhas.
+        try:
+            df = pd.read_csv(
+                io.BytesIO(conteudo_bytes),
+                sep=";",
+                encoding=encoding,
+                skiprows=header_idx,
+                header=0,
+                names=COLUNAS_VENDAS,
+                usecols=range(19),
+                dtype=str,
+                engine="c",
+                low_memory=False,
+                on_bad_lines="skip",
+            )
+        except Exception:
+            # Mantém compatibilidade com exportações antigas ou malformadas do Autcom.
+            df = _ler_csv_fallback(conteudo_bytes, encoding, header_idx)
 
-        if len(linhas) < 2:
-            raise ValueError("O arquivo não contém linhas de vendas.")
-
-        dados = [linha for linha in linhas[1:] if len(linha) >= 19]
-        if not dados:
-            raise ValueError("Nenhuma linha válida foi encontrada.")
-
-        dados = [linha[:19] for linha in dados]
-        df = pd.DataFrame(dados, columns=COLUNAS_VENDAS)
-
-    # Limpeza
+    # Limpeza vetorizada
     df = df.dropna(how="all").copy()
-    df["EMP"] = (
-        df["EMP"].astype(str)
-        .str.extract(r"(\d+)", expand=False)
-        .str.zfill(3)
+    df["EMP"] = df["EMP"].str.extract(r"(\d+)", expand=False).str.zfill(3)
+    df["LOJA"] = df["EMP"].map(LOJAS)
+    mask_sem_loja = df["LOJA"].isna()
+    df.loc[mask_sem_loja, "LOJA"] = (
+        "Empresa não mapeada (" + df.loc[mask_sem_loja, "EMP"].fillna("?") + ")"
     )
-    df["LOJA"] = df["EMP"].map(LOJAS).fillna("Empresa não mapeada (" + df["EMP"].fillna("?") + ")")
-    df["DATA"] = pd.to_datetime(df["DATA"], dayfirst=True, errors="coerce")
+    df["DATA"] = pd.to_datetime(df["DATA"], dayfirst=True, errors="coerce", format="mixed")
 
     for coluna in ["QTD", "UNIT", "VR_TOTAL", "CUSTO", "MARGEM_PCT"]:
         df[coluna] = numero_br(df[coluna])
 
     df["COD_KEY"] = codigo_chave(df["COD_PRODUTO"])
-    df["CLIENTE"] = df["CLIENTE"].fillna("CLIENTE NÃO INFORMADO").astype(str).str.strip()
-    df["DESCRICAO"] = df["DESCRICAO"].fillna("PRODUTO NÃO INFORMADO").astype(str).str.strip()
-    df["NR_DOC"] = df["NR_DOC"].fillna("").astype(str).str.strip()
+    df["CLIENTE"] = df["CLIENTE"].fillna("CLIENTE NÃO INFORMADO").str.strip()
+    df["DESCRICAO"] = df["DESCRICAO"].fillna("PRODUTO NÃO INFORMADO").str.strip()
+    df["NR_DOC"] = df["NR_DOC"].fillna("").str.strip()
 
-    # Remove linhas completamente inválidas, mas preserva devoluções/valores negativos.
-    df = df[df["DATA"].notna() & df["VR_TOTAL"].notna()].copy()
-    return df
+    # Remove linhas inválidas, preservando devoluções e valores negativos.
+    return df.loc[df["DATA"].notna() & df["VR_TOTAL"].notna()].copy()
 
 
 @st.cache_data(show_spinner=False)
@@ -373,6 +406,60 @@ def tabela_estilizada(df, formatos=None, positivos=None, negativos=None):
         if coluna in df.columns:
             styler = styler.map(cor_falta, subset=[coluna])
 
+    return styler
+
+
+
+
+def criar_curva_abc(df, dimensoes, metrica, nome_metrica):
+    """Cria Curva ABC pelo valor acumulado da métrica informada."""
+    base = (
+        df.groupby(dimensoes, dropna=False)
+        .agg(VALOR_ABC=(metrica, "sum"))
+        .reset_index()
+        .sort_values("VALOR_ABC", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    # A Curva ABC clássica usa contribuições positivas. Valores líquidos
+    # iguais ou inferiores a zero permanecem visíveis, mas são classificados como C.
+    base["VALOR_POSITIVO_ABC"] = base["VALOR_ABC"].clip(lower=0)
+    total = base["VALOR_POSITIVO_ABC"].sum()
+    if total == 0:
+        base["PARTICIPACAO_PCT"] = 0.0
+        base["ACUMULADO_PCT"] = 0.0
+    else:
+        base["PARTICIPACAO_PCT"] = base["VALOR_POSITIVO_ABC"] / total * 100
+        base["ACUMULADO_PCT"] = base["PARTICIPACAO_PCT"].cumsum()
+
+    base["CURVA_ABC"] = np.select(
+        [
+            (base["VALOR_ABC"] > 0) & (base["ACUMULADO_PCT"] <= 80),
+            (base["VALOR_ABC"] > 0) & (base["ACUMULADO_PCT"] <= 95),
+        ],
+        ["A", "B"],
+        default="C",
+    )
+    base = base.drop(columns="VALOR_POSITIVO_ABC")
+    base["POSICAO"] = np.arange(1, len(base) + 1)
+    base["NOME_METRICA"] = nome_metrica
+    return base
+
+
+def estilo_curva_abc(df, coluna_classe="Curva ABC"):
+    styler = df.style
+
+    def destacar_classe(valor):
+        if valor == "A":
+            return "background-color: #d8f3dc; color: #14532d; font-weight: 800;"
+        if valor == "B":
+            return "background-color: #fff3bf; color: #7c5c00; font-weight: 800;"
+        if valor == "C":
+            return "background-color: #fde2e2; color: #991b1b; font-weight: 800;"
+        return ""
+
+    if coluna_classe in df.columns:
+        styler = styler.map(destacar_classe, subset=[coluna_classe])
     return styler
 
 
@@ -986,11 +1073,11 @@ st.divider()
 
 
 # =========================================================
-# 5. PRODUTOS E MIX
+# 5. PRODUTOS, PARTICIPAÇÃO E CURVA ABC
 # =========================================================
 st.markdown('<div class="section-title">Produtos e composição do faturamento</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="section-subtitle">Ranking de produtos e análises por linha, marca e segmento.</div>',
+    '<div class="section-subtitle">Ranking, participação percentual e Curvas ABC por faturamento e unidades.</div>',
     unsafe_allow_html=True
 )
 
@@ -999,6 +1086,19 @@ ranking_prod = (
     .agg(QUANTIDADE=("QTD", "sum"), VALOR=("VR_TOTAL", "sum"))
     .reset_index()
     .sort_values("VALOR", ascending=False)
+)
+
+total_faturamento_periodo = dados_periodo["VR_TOTAL"].sum()
+total_unidades_periodo = dados_periodo["QTD"].sum()
+ranking_prod["PARTICIPACAO_FAT_PCT"] = np.where(
+    total_faturamento_periodo != 0,
+    ranking_prod["VALOR"] / total_faturamento_periodo * 100,
+    0,
+)
+ranking_prod["PARTICIPACAO_UN_PCT"] = np.where(
+    total_unidades_periodo != 0,
+    ranking_prod["QUANTIDADE"] / total_unidades_periodo * 100,
+    0,
 )
 
 rp1, rp2 = st.columns([1, 1.15])
@@ -1011,7 +1111,9 @@ with rp1:
         orientation="h",
         title=f"Top {top_n} produtos por faturamento",
         labels={"VALOR": "Faturamento", "DESCRICAO": "Produto"},
+        text="PARTICIPACAO_FAT_PCT",
     )
+    fig_prod.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
     fig_prod.update_layout(height=max(430, top_n * 28), xaxis_tickprefix="R$ ")
     st.plotly_chart(fig_prod, use_container_width=True)
 
@@ -1021,17 +1123,22 @@ with rp2:
         "DESCRICAO": "Produto",
         "QUANTIDADE": "Quantidade",
         "VALOR": "Valor",
+        "PARTICIPACAO_FAT_PCT": "% do Faturamento",
+        "PARTICIPACAO_UN_PCT": "% das Unidades",
     })
     st.dataframe(
         ranking_prod_exib.head(100).style.format({
             "Quantidade": lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
             "Valor": brl,
+            "% do Faturamento": lambda x: pct(x, 2),
+            "% das Unidades": lambda x: pct(x, 2),
         }),
         use_container_width=True,
         hide_index=True,
         height=max(430, top_n * 28),
     )
 
+st.subheader("Participação no faturamento geral")
 abas_mix = st.tabs(["Linha/Grupo", "Marca", "Segmento"])
 
 for aba, dimensao, titulo in zip(
@@ -1046,6 +1153,11 @@ for aba, dimensao, titulo in zip(
             .reset_index()
             .sort_values("FATURAMENTO", ascending=False)
         )
+        mix["PARTICIPACAO_PCT"] = np.where(
+            total_faturamento_periodo != 0,
+            mix["FATURAMENTO"] / total_faturamento_periodo * 100,
+            0,
+        )
 
         mx1, mx2 = st.columns([1.15, 1])
         with mx1:
@@ -1056,7 +1168,9 @@ for aba, dimensao, titulo in zip(
                 orientation="h",
                 title=titulo,
                 labels={"FATURAMENTO": "Faturamento", dimensao: dimensao.title()},
+                text="PARTICIPACAO_PCT",
             )
+            fig_mix.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
             fig_mix.update_layout(height=520, xaxis_tickprefix="R$ ")
             st.plotly_chart(fig_mix, use_container_width=True)
 
@@ -1066,8 +1180,9 @@ for aba, dimensao, titulo in zip(
                 names=dimensao,
                 values="FATURAMENTO",
                 hole=0.48,
-                title="Representatividade no faturamento",
+                title="Participação no faturamento geral",
             )
+            fig_pizza.update_traces(textinfo="percent+label")
             fig_pizza.update_layout(height=520)
             st.plotly_chart(fig_pizza, use_container_width=True)
 
@@ -1075,11 +1190,13 @@ for aba, dimensao, titulo in zip(
             dimensao: dimensao.title(),
             "FATURAMENTO": "Faturamento",
             "QUANTIDADE": "Quantidade",
+            "PARTICIPACAO_PCT": "% do Total",
         })
         st.dataframe(
             mix_exib.style.format({
                 "Faturamento": brl,
                 "Quantidade": lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "% do Total": lambda x: pct(x, 2),
             }),
             use_container_width=True,
             hide_index=True,
@@ -1087,9 +1204,101 @@ for aba, dimensao, titulo in zip(
 
 st.divider()
 
+# =========================================================
+# 6. CURVAS ABC
+# =========================================================
+st.markdown('<div class="section-title">Curvas ABC</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-subtitle">Classificação A até 80% acumulado, B de 80% a 95% e C acima de 95%.</div>',
+    unsafe_allow_html=True
+)
+
+abc_prod_fat = criar_curva_abc(
+    dados_periodo, ["COD_PRODUTO", "DESCRICAO"], "VR_TOTAL", "Faturamento"
+)
+abc_prod_un = criar_curva_abc(
+    dados_periodo, ["COD_PRODUTO", "DESCRICAO"], "QTD", "Unidades"
+)
+abc_linha_fat = criar_curva_abc(
+    dados_periodo, ["LINHA"], "VR_TOTAL", "Faturamento"
+)
+abc_linha_un = criar_curva_abc(
+    dados_periodo, ["LINHA"], "QTD", "Unidades"
+)
+
+abas_abc = st.tabs([
+    "Produtos — Faturamento",
+    "Produtos — Unidades",
+    "Linha/Grupo — Faturamento",
+    "Linha/Grupo — Unidades",
+])
+
+config_abc = [
+    (abas_abc[0], abc_prod_fat, ["COD_PRODUTO", "DESCRICAO"], "Faturamento"),
+    (abas_abc[1], abc_prod_un, ["COD_PRODUTO", "DESCRICAO"], "Unidades"),
+    (abas_abc[2], abc_linha_fat, ["LINHA"], "Faturamento"),
+    (abas_abc[3], abc_linha_un, ["LINHA"], "Unidades"),
+]
+
+for aba, base_abc, dimensoes, tipo_metrica in config_abc:
+    with aba:
+        resumo_classes = (
+            base_abc.groupby("CURVA_ABC", dropna=False)
+            .agg(ITENS=("CURVA_ABC", "size"), VALOR=("VALOR_ABC", "sum"))
+            .reindex(["A", "B", "C"], fill_value=0)
+            .reset_index()
+        )
+        total_valor_abc = resumo_classes["VALOR"].sum()
+        resumo_classes["PARTICIPACAO_PCT"] = np.where(
+            total_valor_abc != 0, resumo_classes["VALOR"] / total_valor_abc * 100, 0
+        )
+
+        a1, a2, a3 = st.columns(3)
+        for col, classe in zip([a1, a2, a3], ["A", "B", "C"]):
+            linha = resumo_classes[resumo_classes["CURVA_ABC"] == classe].iloc[0]
+            valor_formatado = brl(linha["VALOR"]) if tipo_metrica == "Faturamento" else f"{linha['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            col.metric(
+                f"Curva {classe}",
+                valor_formatado,
+                delta=f"{int(linha['ITENS'])} itens | {pct(linha['PARTICIPACAO_PCT'])}",
+                delta_color="off",
+            )
+
+        abc_exib = base_abc.copy()
+        renomear = {
+            "POSICAO": "Posição",
+            "VALOR_ABC": tipo_metrica,
+            "PARTICIPACAO_PCT": "% Participação",
+            "ACUMULADO_PCT": "% Acumulado",
+            "CURVA_ABC": "Curva ABC",
+            "COD_PRODUTO": "Código",
+            "DESCRICAO": "Produto",
+            "LINHA": "Linha/Grupo",
+        }
+        abc_exib = abc_exib.rename(columns=renomear)
+        colunas = ["Posição"] + [renomear.get(c, c) for c in dimensoes] + [
+            tipo_metrica, "% Participação", "% Acumulado", "Curva ABC"
+        ]
+
+        styler_abc = estilo_curva_abc(abc_exib[colunas]).format({
+            tipo_metrica: brl if tipo_metrica == "Faturamento" else (
+                lambda x: f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            ),
+            "% Participação": lambda x: pct(x, 2),
+            "% Acumulado": lambda x: pct(x, 2),
+        })
+        st.dataframe(
+            styler_abc,
+            use_container_width=True,
+            hide_index=True,
+            height=520,
+        )
+
+st.divider()
+
 
 # =========================================================
-# 6. QUALIDADE DO CADASTRO
+# 7. QUALIDADE DO CADASTRO
 # =========================================================
 st.markdown('<div class="section-title">Qualidade do cadastro de produtos</div>', unsafe_allow_html=True)
 st.markdown(
