@@ -1000,18 +1000,21 @@ linha_geral_meta = pd.DataFrame([{
 }])
 metas_com_total = pd.concat([metas, linha_geral_meta], ignore_index=True)
 
+opcoes_gauge = ["TODOS"] + metas["LOJA"].tolist()
 loja_gauge = st.selectbox(
     "Loja do velocímetro",
-    options=metas_com_total["LOJA"].tolist(),
+    options=opcoes_gauge,
+    index=0,
     key="loja_gauge"
 ) if not metas.empty else None
 
 mg1, mg2 = st.columns([1, 1.45])
 if loja_gauge:
-    linha_gauge = metas_com_total[metas_com_total["LOJA"] == loja_gauge].iloc[0]
+    nome_gauge = "GERAL" if loja_gauge == "TODOS" else loja_gauge
+    linha_gauge = metas_com_total[metas_com_total["LOJA"] == nome_gauge].iloc[0]
     with mg1:
         st.plotly_chart(
-            grafico_gauge(linha_gauge["ATINGIMENTO_PCT"], f"Meta mensal — {loja_gauge}"),
+            grafico_gauge(linha_gauge["ATINGIMENTO_PCT"], f"Meta mensal — {nome_gauge}"),
             use_container_width=True
         )
         cc1, cc2 = st.columns(2)
@@ -1053,39 +1056,71 @@ st.dataframe(
     hide_index=True,
 )
 
-# Texto consolidado de Ano-1 e Meta Geral para WhatsApp
+# Texto de Ano-1 e Meta por loja para WhatsApp
 linhas_whatsapp_geral = [
-    "*CENÁRIO GERAL DE VENDAS — DAUTO TINTAS*",
+    "*CENÁRIO DE VENDAS — DAUTO TINTAS*",
     f"Período analisado: {data_min.strftime('%d/%m/%Y')} a {data_max.strftime('%d/%m/%Y')}",
     "",
-    "*COMPARATIVO ANO-1*",
+    "*CENÁRIO POR LOJA*",
+]
+
+cenario_lojas = geral.merge(
+    metas[["LOJA", "META", "FALTA", "ATINGIMENTO_PCT"]],
+    on="LOJA",
+    how="left",
+)
+
+for _, linha in cenario_lojas.iterrows():
+    loja = linha["LOJA"]
+    realizado = linha["REALIZADO"]
+    ano1 = linha["ANO_ANTERIOR"]
+    variacao = linha["VARIACAO_VALOR"]
+    crescimento = linha["CRESCIMENTO_PCT"]
+    meta = linha["META"]
+    falta = linha["FALTA"]
+    atingimento = linha["ATINGIMENTO_PCT"]
+
+    linhas_whatsapp_geral.extend([
+        "",
+        f"*{loja}*",
+        f"Realizado: {brl(realizado)}",
+        f"Ano-1: {brl(ano1)}",
+        f"Variação: {'+' if variacao >= 0 else '-'}{brl(abs(variacao))} ({pct(crescimento)})",
+        f"Meta: {brl(meta)}",
+        f"Atingimento: {pct(atingimento)}",
+    ])
+    if falta > 0:
+        linhas_whatsapp_geral.append(f"Falta para a meta: {brl(falta)}")
+    else:
+        linhas_whatsapp_geral.append(f"Meta superada em: {brl(abs(falta))}")
+
+linhas_whatsapp_geral.extend([
+    "",
+    "*CENÁRIO GERAL*",
     f"Faturamento atual: {brl(total_real_ano1)}",
     f"Faturamento Ano-1: {brl(total_ano1)}",
-]
+])
 if total_variacao_ano1 >= 0:
     linhas_whatsapp_geral.append(f"Crescimento em valor: {brl(total_variacao_ano1)}")
 else:
     linhas_whatsapp_geral.append(f"Queda em valor: {brl(abs(total_variacao_ano1))}")
 linhas_whatsapp_geral.append(f"Variação percentual: {pct(total_crescimento_ano1)}")
 linhas_whatsapp_geral.extend([
-    "",
-    "*CENÁRIO DA META GERAL*",
-    f"Realizado: {brl(total_real_meta)}",
     f"Meta geral: {brl(total_meta_geral)}",
-    f"Atingimento: {pct(total_pct_meta)}",
+    f"Atingimento geral: {pct(total_pct_meta)}",
 ])
 if total_falta_meta > 0:
-    linhas_whatsapp_geral.append(f"Falta para atingir a meta: {brl(total_falta_meta)}")
+    linhas_whatsapp_geral.append(f"Falta para a meta geral: {brl(total_falta_meta)}")
 else:
-    linhas_whatsapp_geral.append(f"Meta superada em: {brl(abs(total_falta_meta))}")
+    linhas_whatsapp_geral.append(f"Meta geral superada em: {brl(abs(total_falta_meta))}")
 
 texto_whatsapp_geral = "\n".join(linhas_whatsapp_geral)
 
-st.subheader("Texto para WhatsApp — Ano-1 e Meta Geral")
+st.subheader("Texto para WhatsApp — Cenário por Loja, Ano-1 e Metas")
 st.text_area(
-    "Copie e envie o cenário consolidado",
+    "Copie e envie o cenário completo",
     value=texto_whatsapp_geral,
-    height=310,
+    height=620,
     key="texto_whatsapp_cenario_geral",
 )
 
