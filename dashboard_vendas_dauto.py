@@ -600,6 +600,11 @@ ranking = ranking.sort_values(
     ascending=[False, False]
 ).reset_index(drop=True)
 ranking["POSIÇÃO"] = range(1, len(ranking) + 1)
+ranking["PERCENTUAL_META"] = np.where(
+    ranking["META"] != 0,
+    ranking["REALIZADO"] / ranking["META"] * 100,
+    np.nan,
+)
 ranking["SITUAÇÃO"] = np.where(
     ranking["DIFERENCA"] >= 0,
     "Acima da meta",
@@ -614,17 +619,25 @@ ranking_exib = ranking.rename(columns={
     "LOJA": "Loja",
     "META": "Meta",
     "REALIZADO": "Realizado",
+    "PERCENTUAL_META": "% da Meta",
     "DIFERENCA": "Diferença",
     "SITUAÇÃO": "Situação",
 })
 
+def formatar_diferenca(valor):
+    return f"+{brl(valor)}" if valor >= 0 else f"-{brl(abs(valor))}"
+
 st.dataframe(
     tabela_estilizada(
-        ranking_exib[["Posição", "Loja", "Meta", "Realizado", "Diferença", "Situação"]],
+        ranking_exib[[
+            "Posição", "Loja", "Meta", "Realizado",
+            "% da Meta", "Diferença", "Situação"
+        ]],
         formatos={
             "Meta": brl,
             "Realizado": brl,
-            "Diferença": brl,
+            "% da Meta": lambda x: pct(x),
+            "Diferença": formatar_diferenca,
         },
         positivos=["Diferença"],
     ),
