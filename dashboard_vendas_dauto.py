@@ -815,17 +815,28 @@ st.text_area(
 
 st.subheader("Meta diária — comparação de 27 a 31 de julho")
 dias_aniversario = pd.date_range("2026-07-27", "2026-07-31", freq="D")
+
+opcoes_loja_diaria = ["TODOS"] + aniv["LOJA"].tolist() if not aniv.empty else ["TODOS"]
 loja_diaria = st.selectbox(
     "Selecione a loja para analisar os cinco dias",
-    options=aniv["LOJA"].tolist(),
+    options=opcoes_loja_diaria,
+    index=0,
     key="loja_diaria"
-) if not aniv.empty else None
+)
 
 if loja_diaria:
-    meta_dia = METAS_ANIVERSARIO[loja_diaria] / 5
+    if loja_diaria == "TODOS":
+        meta_dia = sum(METAS_ANIVERSARIO.values()) / 5
+        dados_diarios_selecionados = dados_aniversario
+        titulo_diario = "GERAL"
+    else:
+        meta_dia = METAS_ANIVERSARIO[loja_diaria] / 5
+        dados_diarios_selecionados = dados_aniversario[dados_aniversario["LOJA"] == loja_diaria]
+        titulo_diario = loja_diaria
+
     diario = (
-        dados_aniversario[dados_aniversario["LOJA"] == loja_diaria]
-        .groupby(dados_aniversario["DATA"].dt.normalize())["VR_TOTAL"]
+        dados_diarios_selecionados
+        .groupby(dados_diarios_selecionados["DATA"].dt.normalize())["VR_TOTAL"]
         .sum()
         .reindex(dias_aniversario, fill_value=0)
         .rename("REALIZADO")
@@ -844,7 +855,7 @@ if loja_diaria:
             x="DIA",
             y=["REALIZADO", "META_DIARIA"],
             barmode="group",
-            title=f"{loja_diaria} — realizado x meta diária",
+            title=f"{titulo_diario} — realizado x meta diária",
             labels={"value": "Valor", "variable": "Indicador", "DIA": "Dia"},
         )
         fig_dia.update_layout(height=370, yaxis_tickprefix="R$ ", legend_title_text="")
