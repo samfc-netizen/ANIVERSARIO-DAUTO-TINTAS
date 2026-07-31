@@ -498,20 +498,55 @@ def grafico_gauge(valor_pct, titulo):
 # =========================================================
 # CARREGAMENTO
 # =========================================================
+def localizar_bases_vendas_repositorio():
+    """Lista possíveis relatórios de vendas salvos junto ao app.
+
+    O cadastro de produtos e arquivos temporários são ignorados. Os arquivos
+    mais recentemente alterados são testados primeiro.
+    """
+    extensoes = {".csv", ".txt", ".xlsx", ".xls"}
+    ignorar = {
+        "TABELA PARA DASHBOARD.XLSX",
+        "TABELA PARA DASHBOARD.XLS",
+    }
+
+    candidatos = []
+    for caminho in Path(".").iterdir():
+        if not caminho.is_file() or caminho.suffix.lower() not in extensoes:
+            continue
+        if caminho.name.upper() in ignorar or caminho.name.startswith("~$"):
+            continue
+        candidatos.append(caminho)
+
+    return sorted(candidatos, key=lambda item: item.stat().st_mtime, reverse=True)
+
+
 st.title("Dashboard de Vendas")
 st.caption("Acompanhamento da Semana do Aniversário, metas mensais, crescimento e mix de produtos.")
+
+caminhos_vendas_repositorio = localizar_bases_vendas_repositorio()
+caminho_cadastro = Path("TABELA PARA DASHBOARD.xlsx")
+cadastro_repositorio = caminho_cadastro.exists()
 
 with st.sidebar:
     st.header("Atualização das bases")
 
-    arquivo_vendas = st.file_uploader(
-        "Relatório de vendas",
-        type=["csv", "txt", "xlsx", "xls"],
-        help="Aceita o relatório analítico do Autcom, inclusive com o cabeçalho institucional antes da tabela."
-    )
+    if caminhos_vendas_repositorio:
+        st.success(
+            f"Base de vendas localizada no repositório: {caminhos_vendas_repositorio[0].name}"
+        )
+        st.caption("O upload abaixo é opcional e substitui a base salva somente nesta execução.")
+    else:
+        st.warning("Nenhum relatório de vendas válido foi localizado no repositório.")
 
-    caminho_cadastro = Path("TABELA PARA DASHBOARD.xlsx")
-    cadastro_repositorio = caminho_cadastro.exists()
+    arquivo_vendas = st.file_uploader(
+        "Atualizar relatório de vendas (opcional)",
+        type=["csv", "txt", "xlsx", "xls"],
+        help=(
+            "Quando nenhum arquivo for enviado, o dashboard usa automaticamente "
+            "o relatório salvo no repositório."
+        )
+    )
 
     if cadastro_repositorio:
         st.success("Cadastro de produtos localizado no repositório.")
@@ -531,8 +566,11 @@ with st.sidebar:
         help="Quando marcado, devoluções reduzem o faturamento líquido."
     )
 
-if arquivo_vendas is None:
-    st.info("Carregue o relatório de vendas na barra lateral para atualizar o dashboard.")
+if arquivo_vendas is None and not caminhos_vendas_repositorio:
+    st.info(
+        "Adicione ao repositório um relatório de vendas CSV, TXT ou Excel, "
+        "ou carregue um arquivo na barra lateral."
+    )
     st.stop()
 
 if not cadastro_repositorio and arquivo_cadastro is None:
@@ -540,7 +578,32 @@ if not cadastro_repositorio and arquivo_cadastro is None:
     st.stop()
 
 try:
-    vendas = ler_relatorio_vendas(arquivo_vendas.getvalue(), arquivo_vendas.name)
+    if arquivo_vendas is not None:
+        vendas = ler_relatorio_vendas(arquivo_vendas.getvalue(), arquivo_vendas.name)
+        origem_vendas = f"Upload: {arquivo_vendas.name}"
+    else:
+        vendas = None
+        erros_leitura = []
+        origem_vendas = None
+
+        # Testa os arquivos do repositório até encontrar um relatório compatível.
+        for caminho_vendas in caminhos_vendas_repositorio:
+            try:
+                vendas = ler_relatorio_vendas(
+                    caminho_vendas.read_bytes(),
+                    caminho_vendas.name,
+                )
+                origem_vendas = f"Repositório: {caminho_vendas.name}"
+                break
+            except Exception as erro_base:
+                erros_leitura.append(f"{caminho_vendas.name}: {erro_base}")
+
+        if vendas is None:
+            detalhes = " | ".join(erros_leitura[:3])
+            raise ValueError(
+                "Nenhum arquivo compatível com o relatório de vendas foi encontrado. "
+                + detalhes
+            )
 
     if cadastro_repositorio:
         cadastro = ler_cadastro_produtos(str(caminho_cadastro), origem="repositorio")
@@ -548,6 +611,7 @@ try:
         cadastro = ler_cadastro_produtos(arquivo_cadastro.getvalue(), origem="arquivo")
 
     dados = enriquecer_vendas(vendas, cadastro)
+    st.caption(f"Base ativa — {origem_vendas}")
 
 except Exception as erro:
     st.error(f"Erro ao processar as bases: {erro}")
